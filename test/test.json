@@ -1,0 +1,6 @@
+{
+  "test": "value",
+  "some other": {
+    "with": "other value"
+  }
+}
