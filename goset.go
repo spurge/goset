@@ -28,48 +28,64 @@ package goset
 
 import (
 	"io/ioutil"
+	"sync"
 )
 
 type Settings struct {
-	inVal  []chan map[string]interface{}
-	inErr  chan error
+	sync.RWMutex
 	values map[string]interface{}
 	err    error
-	wait   bool
-	done   chan bool
 }
 
 // Create a new goset settings instance
 func New() Settings {
-	return Settings{
-		inErr: make(chan error),
-	}
+	return Settings{}
 }
 
 // Load local JSON file and merge it's values into the settings instance
 func (s *Settings) Load(filename string) *Settings {
-	go s.load(filename, s.getChan())
+	s.Lock()
+
+	go func() {
+		defer s.Unlock()
+
+		data, err := ioutil.ReadFile(filename)
+
+		if err != nil {
+			s.err = err
+			return
+		}
+
+		values, err := parse(data)
+
+		if err != nil {
+			s.err = err
+			return
+		}
+
+		s.mergeValues(values)
+	}()
+
 	return s
 }
 
 // Set and merge values into the settings instance
 func (s *Settings) Set(values map[string]interface{}) *Settings {
-	go s.set(values, s.getChan())
+	s.Lock()
+
+	go func() {
+		defer s.Unlock()
+
+		s.mergeValues(values)
+	}()
+
 	return s
 }
 
 // Get values from your settings
 func (s *Settings) Get(path string) (interface{}, error) {
-	for _, inVal := range s.inVal {
-		select {
-		case values := <-inVal:
-			s.values = merge(&s.values, &values)
-		case err := <-s.inErr:
-			s.err = err
-		}
-	}
-
-	s.inVal = make([]chan map[string]interface{}, 0)
+	s.RLock()
+	defer s.RUnlock()
 
 	if s.err != nil {
 		return nil, s.err
@@ -78,39 +94,6 @@ func (s *Settings) Get(path string) (interface{}, error) {
 	return extract(s.values, path)
 }
 
-func (s *Settings) getChan() chan map[string]interface{} {
-	inVal := make([]chan map[string]interface{}, len(s.inVal)+1)
-	copy(inVal, s.inVal)
-	s.inVal = inVal
-
-	index := len(s.inVal) - 1
-
-	if index < 0 {
-		index = 0
-	}
-
-	s.inVal[index] = make(chan map[string]interface{})
-
-	return s.inVal[index]
-}
-
-func (s *Settings) load(filename string, inVal chan map[string]interface{}) {
-	data, err := ioutil.ReadFile(filename)
-
-	if err != nil {
-		s.inErr <- err
-	}
-
-	values, err := parse(data)
-
-	if err != nil {
-		s.inErr <- err
-		return
-	}
-
-	s.set(values, inVal)
-}
-
-func (s *Settings) set(values map[string]interface{}, inVal chan map[string]interface{}) {
-	inVal <- values
+func (s *Settings) mergeValues(values map[string]interface{}) {
+	s.values = merge(&s.values, &values)
 }
